@@ -1,0 +1,12 @@
+# Folders
+deploy-example/
+doc/
+
+# Dockerfile
+Dockerfile
+Dockerfile.buildx
+
+# Other
+README.MD
+LICENSE
+.travis.yaml
