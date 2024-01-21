@@ -12,6 +12,6 @@ FROM --platform=$TARGETPLATFORM scratch
 ARG TARGETPLATFORM
 LABEL MAINTAINER="Jan Svoboda <svoboh@gmail.com>"
 
-COPY --from=build /src/kubernetes-replicator /kubernetes-replicator
+COPY --from=build /src/imagepullsecret-patcher /imagepullsecret-patcher
 
-CMD ["/kubernetes-replicator"]
+CMD ["/imagepullsecret-patcher"]
