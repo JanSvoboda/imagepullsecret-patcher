@@ -38,8 +38,7 @@ var (
 	configUseInformers         bool          = true
 	configLoopDuration         time.Duration = 10 * time.Second
 	configRunningInCluster     bool          = true
-
-	dockerConfigJSON string
+	dockerConfigJSON           string
 )
 
 const (
@@ -67,18 +66,15 @@ func main() {
 	flag.DurationVar(&configLoopDuration, "loop-duration", LookupEnvOrType("CONFIG_LOOP_DURATION", configLoopDuration), "String defining the loop duration")
 	flag.BoolVar(&configRunningInCluster, "running-in-cluster", LookupEnvOrType("CONFIG_RUNNING_IN_CLUSTER", configRunningInCluster), "if false, will use kubeconfig and current context to connect to k8s API")
 	flag.Parse()
-
 	// setup logrus
 	if configDebug {
 		log.SetLevel(log.DebugLevel)
 	}
 	log.Info("Application started")
-
 	// Validate input, as both of these being configured would have undefined behavior.
 	if configDockerconfigjson != "" && configDockerConfigJSONPath != "" {
 		log.Panic(fmt.Errorf("Cannot specify both `configdockerjson` and `configdockerjsonpath`"))
 	}
-
 	// create k8s clientset from in-cluster config
 	var config *rest.Config
 	var err error
@@ -109,13 +105,11 @@ func main() {
 	k8s := &k8sClient{
 		clientset: clientset,
 	}
-
 	// Populate secret value to set
 	dockerConfigJSON, err = getDockerConfigJSON()
 	if err != nil {
 		log.Panic(err)
 	}
-
 	if configUseInformers {
 		log.Debug("Informer started")
 		startInformers(k8s)
@@ -168,11 +162,30 @@ func startInformers(k8s *k8sClient) {
 							// if has error in processing secret, should skip processing service account
 							log.Error(err)
 						} else {
-							log.Debugf("[%s] Start processing service account", namespace)
-							// get default service account, and patch image pull secret if not exist
-							err = processServiceAccount(k8s, namespace)
-							if err != nil {
-								log.Error(err)
+							log.Debugf("[%s] Start processing service accounts", namespace)
+							// provision deleted secret to all managed service accounts or just default service account
+							if configAllServiceAccount || len(configServiceAccounts) > 0 {
+								sas, err := k8s.clientset.CoreV1().ServiceAccounts(namespace).List(context.Background(), metav1.ListOptions{})
+								if err != nil {
+									log.Error(err)
+									return
+								}
+								for _, sa := range sas.Items {
+									err = processServiceAccount(k8s, namespace, &sa)
+									if err != nil {
+										log.Error(err)
+										continue
+									}
+								}
+							} else {
+								sa, err := k8s.clientset.CoreV1().ServiceAccounts(namespace).Get(context.Background(), defaultServiceAccountName, metav1.GetOptions{})
+								if err != nil {
+									log.Error(err)
+								}
+								err = processServiceAccount(k8s, namespace, sa)
+								if err != nil {
+									log.Error(err)
+								}
 							}
 						}
 					} else {
@@ -221,17 +234,18 @@ func startInformers(k8s *k8sClient) {
 			sa := obj.(*v1.ServiceAccount)
 			serviceAccount := sa.Name
 			namespace := sa.Namespace
+			// check if namespace of service account exists
 			namespaceObj, err := k8s.clientset.CoreV1().Namespaces().Get(context.Background(), namespace, metav1.GetOptions{})
 			if err != nil {
 				log.Panic(err)
 			}
-			log.Debugf("[%s] ServiceAccount [%s] discovered", sa.Namespace, serviceAccount)
+			log.Infof("[%s] ServiceAccount [%s] discovered", sa.Namespace, serviceAccount)
 			if namespaceIsExcluded(*namespaceObj) {
-				log.Infof("[%s] Namespace skipped", namespace)
+				log.Infof("[%s] Namespace excluded", namespace)
 			} else {
 				log.Debugf("[%s] Start processing service account [%s]", namespace, serviceAccount)
 				// get default service account, and patch image pull secret if not exist
-				err = processServiceAccount(k8s, namespace)
+				err = processServiceAccount(k8s, namespace, sa)
 				if err != nil {
 					log.Error(err)
 				}
@@ -278,9 +292,30 @@ func loop(k8s *k8sClient) {
 		}
 		// get default service account, and patch image pull secret if not exist
 		log.Debugf("[%s] Start processing service account", namespace)
-		err = processServiceAccount(k8s, namespace)
-		if err != nil {
-			log.Error(err)
+		if configAllServiceAccount || len(configServiceAccounts) > 0 {
+			sas, err := k8s.clientset.CoreV1().ServiceAccounts(namespace).List(context.Background(), metav1.ListOptions{})
+			if err != nil {
+				log.Error(err)
+				return
+			}
+			for _, sa := range sas.Items {
+				err = processServiceAccount(k8s, namespace, &sa)
+				if err != nil {
+					log.Error(err)
+					continue
+				}
+			}
+		} else {
+			sa, err := k8s.clientset.CoreV1().ServiceAccounts(namespace).Get(context.Background(), defaultServiceAccountName, metav1.GetOptions{})
+			if err != nil {
+				log.Error(err)
+				continue
+			}
+			err = processServiceAccount(k8s, namespace, sa)
+			if err != nil {
+				log.Error(err)
+				continue
+			}
 		}
 	}
 }
@@ -336,30 +371,28 @@ func processSecret(k8s *k8sClient, namespace string) error {
 	return nil
 }
 
-func processServiceAccount(k8s *k8sClient, namespace string) error {
-	sas, err := k8s.clientset.CoreV1().ServiceAccounts(namespace).List(context.Background(), metav1.ListOptions{})
+func processServiceAccount(k8s *k8sClient, namespace string, serviceAccount *v1.ServiceAccount) error {
+	if !configAllServiceAccount && stringNotInList(serviceAccount.Name, configServiceAccounts) {
+		log.Debugf("[%s] Skip service account [%s]", namespace, serviceAccount.Name)
+		return nil
+	}
+
+	if includeImagePullSecret(serviceAccount, configSecretName) {
+		log.Debugf("[%s] ImagePullSecrets found", namespace)
+		return nil
+	}
+
+	patch, err := getPatchString(serviceAccount, configSecretName)
 	if err != nil {
-		return fmt.Errorf("[%s] Failed to list service accounts: %v", namespace, err)
+		return fmt.Errorf("[%s] Failed to get patch string: %v", namespace, err)
 	}
-	for _, sa := range sas.Items {
-		if !configAllServiceAccount && stringNotInList(sa.Name, configServiceAccounts) {
-			log.Debugf("[%s] Skip service account [%s]", namespace, sa.Name)
-			continue
-		}
-		if includeImagePullSecret(&sa, configSecretName) {
-			log.Debugf("[%s] ImagePullSecrets found", namespace)
-			continue
-		}
-		patch, err := getPatchString(&sa, configSecretName)
-		if err != nil {
-			return fmt.Errorf("[%s] Failed to get patch string: %v", namespace, err)
-		}
-		_, err = k8s.clientset.CoreV1().ServiceAccounts(namespace).Patch(context.Background(), sa.Name, types.StrategicMergePatchType, patch, metav1.PatchOptions{})
-		if err != nil {
-			return fmt.Errorf("[%s] Failed to patch imagePullSecrets to service account [%s]: %v", namespace, sa.Name, err)
-		}
-		log.Infof("[%s] Patched imagePullSecrets to service account [%s]", namespace, sa.Name)
+
+	_, err = k8s.clientset.CoreV1().ServiceAccounts(namespace).Patch(context.Background(), serviceAccount.Name, types.StrategicMergePatchType, patch, metav1.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("[%s] Failed to patch imagePullSecrets to service account [%s]: %v", namespace, serviceAccount.Name, err)
 	}
+	log.Infof("[%s] Patched imagePullSecrets to service account [%s]", namespace, serviceAccount.Name)
+
 	return nil
 }
 

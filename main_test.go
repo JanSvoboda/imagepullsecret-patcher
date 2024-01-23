@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -106,7 +106,7 @@ var testCasesProcessServiceAccount = []testCase{
 			assertHasError(assertHasImagePullSecret(configSecretName, "other-service-account")),
 		},
 		testSteps: []step{
-			processServiceAccountDefault,
+			helperProcessServiceAccountOther("other-service-account"),
 			assertHasError(assertHasImagePullSecret(configSecretName, "other-service-account")),
 		},
 	},
@@ -118,7 +118,7 @@ var testCasesProcessServiceAccount = []testCase{
 			assertHasError(assertHasImagePullSecret(configSecretName, "other-service-account")),
 		},
 		testSteps: []step{
-			processServiceAccountDefault,
+			helperProcessServiceAccountOther("other-service-account"),
 			assertHasImagePullSecret(configSecretName, "other-service-account"),
 		},
 	},
@@ -146,7 +146,7 @@ type testCase struct {
 
 func runTestCase(t *testing.T, testName string, tc testCase) {
 	// disable logrus
-	logrus.SetOutput(ioutil.Discard)
+	logrus.SetOutput(io.Discard)
 
 	// create fake client
 	k8s := &k8sClient{
@@ -175,7 +175,21 @@ func processSecretDefault(k8s *k8sClient) error {
 }
 
 func processServiceAccountDefault(k8s *k8sClient) error {
-	return processServiceAccount(k8s, v1.NamespaceDefault)
+	sa, err := k8s.clientset.CoreV1().ServiceAccounts(v1.NamespaceDefault).Get(context.Background(), defaultServiceAccountName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	return processServiceAccount(k8s, v1.NamespaceDefault, sa)
+}
+
+func helperProcessServiceAccountOther(serviceAccountName string) step {
+	return func(k8s *k8sClient) error {
+		sa, err := k8s.clientset.CoreV1().ServiceAccounts(v1.NamespaceDefault).Get(context.Background(), serviceAccountName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		return processServiceAccount(k8s, v1.NamespaceDefault, sa)
+	}
 }
 
 func TestNamespaceIsExcluded(t *testing.T) {

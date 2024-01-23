@@ -10,6 +10,7 @@ const (
 	defaultServiceAccountName = "default"
 )
 
+// Check if service account contains imagePullSecret with name equal to secretName
 func includeImagePullSecret(sa *corev1.ServiceAccount, secretName string) bool {
 	for _, imagePullSecret := range sa.ImagePullSecrets {
 		if imagePullSecret.Name == secretName {
@@ -23,6 +24,7 @@ type patch struct {
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
 
+// Append to existing list of imagePullSecrets names a new item with name of secretName
 func getPatchString(sa *corev1.ServiceAccount, secretName string) ([]byte, error) {
 	saPatch := patch{
 		// copy the slice
