@@ -145,52 +145,51 @@ func startInformers(k8s *k8sClient) {
 			secret := obj.(*v1.Secret)
 			if secret.Name == configSecretName && secret.Namespace != configSecretNamespace {
 				log.Debugf("Deleted secret [%s] in namespace [%s]", secret.Name, secret.Namespace)
-				var err error
+
 				namespace := secret.Namespace
 				namespaceObj, err := k8s.clientset.CoreV1().Namespaces().Get(context.Background(), namespace, metav1.GetOptions{})
 				if err != nil {
 					log.Panic(err)
 				}
+
+				// if namespace is excluded do nothing and only log
 				if namespaceIsExcluded(*namespaceObj) {
 					log.Infof("[%s] Namespace skipped", namespaceObj.Name)
-				} else {
-					if namespaceObj.Status.Phase != "Terminating" {
-						log.Debugf("[%s] Start processing secret", namespace)
-						// for each namespace, make sure the dockerconfig secret exists
-						err = processSecret(k8s, namespace)
-						if err != nil {
-							// if has error in processing secret, should skip processing service account
-							log.Error(err)
-						} else {
-							log.Debugf("[%s] Start processing service accounts", namespace)
-							// provision deleted secret to all managed service accounts or just default service account
-							if configAllServiceAccount || len(configServiceAccounts) > 0 {
-								sas, err := k8s.clientset.CoreV1().ServiceAccounts(namespace).List(context.Background(), metav1.ListOptions{})
-								if err != nil {
-									log.Error(err)
-									return
-								}
-								for _, sa := range sas.Items {
-									err = processServiceAccount(k8s, namespace, &sa)
-									if err != nil {
-										log.Error(err)
-										continue
-									}
-								}
-							} else {
-								sa, err := k8s.clientset.CoreV1().ServiceAccounts(namespace).Get(context.Background(), defaultServiceAccountName, metav1.GetOptions{})
-								if err != nil {
-									log.Error(err)
-								}
-								err = processServiceAccount(k8s, namespace, sa)
-								if err != nil {
-									log.Error(err)
-								}
-							}
-						}
-					} else {
-						log.Debugf("[%s] namespace is in phase %s", namespace, namespaceObj.Status.Phase)
-					}
+					return
+				}
+
+				// if namespace is terminate do nothing and log only
+				if namespaceObj.Status.Phase == "Terminating" {
+					log.Debugf("[%s] namespace is in phase %s", namespace, namespaceObj.Status.Phase)
+					return
+				}
+
+				log.Debugf("[%s] Start processing secret", namespace)
+				// for each namespace, make sure the dockerconfig secret exists
+				err = processSecret(k8s, namespace)
+
+				if err != nil {
+					// if has error in processing secret, should skip processing service account
+					log.Error(err)
+					return
+				}
+
+				log.Debugf("[%s] Start processing service accounts", namespace)
+
+				// provision deleted secret to all managed service accounts
+				if configAllServiceAccount || len(configServiceAccounts) > 0 {
+					provisionManagedServiceAccounts(k8s, namespace)
+					return
+				}
+
+				// provision default service account
+				sa, err := k8s.clientset.CoreV1().ServiceAccounts(namespace).Get(context.Background(), defaultServiceAccountName, metav1.GetOptions{})
+				if err != nil {
+					log.Error(err)
+				}
+				err = processServiceAccount(k8s, namespace, sa)
+				if err != nil {
+					log.Error(err)
 				}
 			}
 		},
@@ -212,14 +211,15 @@ func startInformers(k8s *k8sClient) {
 			log.Debugf("[%s] Namespace discovered", namespace)
 			if namespaceIsExcluded(*ns) {
 				log.Infof("[%s] Namespace skipped", namespace)
-			} else {
-				log.Debugf("[%s] Start processing secret", namespace)
-				// for each namespace, make sure the dockerconfig secret exists
-				err = processSecret(k8s, namespace)
-				if err != nil {
-					// if has error in processing secret, should skip processing service account
-					log.Error(err)
-				}
+				return
+			}
+
+			log.Debugf("[%s] Start processing secret", namespace)
+			// for each namespace, make sure the dockerconfig secret exists
+			err = processSecret(k8s, namespace)
+			if err != nil {
+				// if has error in processing secret, should skip processing service account
+				log.Error(err)
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
@@ -242,13 +242,14 @@ func startInformers(k8s *k8sClient) {
 			log.Infof("[%s] ServiceAccount [%s] discovered", sa.Namespace, serviceAccount)
 			if namespaceIsExcluded(*namespaceObj) {
 				log.Infof("[%s] Namespace excluded", namespace)
-			} else {
-				log.Debugf("[%s] Start processing service account [%s]", namespace, serviceAccount)
-				// get default service account, and patch image pull secret if not exist
-				err = processServiceAccount(k8s, namespace, sa)
-				if err != nil {
-					log.Error(err)
-				}
+				return
+			}
+
+			log.Debugf("[%s] Start processing service account [%s]", namespace, serviceAccount)
+			// get default service account, and patch image pull secret if not exist
+			err = processServiceAccount(k8s, namespace, sa)
+			if err != nil {
+				log.Error(err)
 			}
 		},
 	})
@@ -293,29 +294,19 @@ func loop(k8s *k8sClient) {
 		// get default service account, and patch image pull secret if not exist
 		log.Debugf("[%s] Start processing service account", namespace)
 		if configAllServiceAccount || len(configServiceAccounts) > 0 {
-			sas, err := k8s.clientset.CoreV1().ServiceAccounts(namespace).List(context.Background(), metav1.ListOptions{})
-			if err != nil {
-				log.Error(err)
-				return
-			}
-			for _, sa := range sas.Items {
-				err = processServiceAccount(k8s, namespace, &sa)
-				if err != nil {
-					log.Error(err)
-					continue
-				}
-			}
-		} else {
-			sa, err := k8s.clientset.CoreV1().ServiceAccounts(namespace).Get(context.Background(), defaultServiceAccountName, metav1.GetOptions{})
-			if err != nil {
-				log.Error(err)
-				continue
-			}
-			err = processServiceAccount(k8s, namespace, sa)
-			if err != nil {
-				log.Error(err)
-				continue
-			}
+			provisionManagedServiceAccounts(k8s, namespace)
+			continue
+		}
+
+		sa, err := k8s.clientset.CoreV1().ServiceAccounts(namespace).Get(context.Background(), defaultServiceAccountName, metav1.GetOptions{})
+		if err != nil {
+			log.Error(err)
+			continue
+		}
+		err = processServiceAccount(k8s, namespace, sa)
+		if err != nil {
+			log.Error(err)
+			continue
 		}
 	}
 }
@@ -369,6 +360,21 @@ func processSecret(k8s *k8sClient, namespace string) error {
 		}
 	}
 	return nil
+}
+
+func provisionManagedServiceAccounts(k8s *k8sClient, namespace string) {
+	sas, err := k8s.clientset.CoreV1().ServiceAccounts(namespace).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		log.Error(err)
+		return
+	}
+	for _, sa := range sas.Items {
+		err = processServiceAccount(k8s, namespace, &sa)
+		if err != nil {
+			log.Error(err)
+			continue
+		}
+	}
 }
 
 func processServiceAccount(k8s *k8sClient, namespace string, serviceAccount *v1.ServiceAccount) error {
