@@ -1,6 +1,6 @@
 # imagepullsecret-patcher
 
-[![Build Status](https://travis-ci.org/JanSvoboda/imagepullsecret-patcher.svg?branch=master)](https://travis-ci.org/JanSvoboda/imagepullsecret-patcher)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/JanSvoboda/imagepullsecret-patcher/go.yml?branch=master&label=ci&logo=github&style=flat-square)](https://github.com/JanSvoboda/imagepullsecret-patcher/actions?workflow=Go)
 [![Go Report Card](https://goreportcard.com/badge/github.com/JanSvoboda/imagepullsecret-patcher)](https://goreportcard.com/report/github.com/JanSvoboda/imagepullsecret-patcher)
 ![Codecov](https://img.shields.io/codecov/c/github/JanSvoboda/imagepullsecret-patcher)
 ![GitHub tag (latest SemVer)](https://img.shields.io/github/v/tag/JanSvoboda/imagepullsecret-patcher)
