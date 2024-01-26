@@ -14,10 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 )
@@ -126,141 +124,6 @@ func main() {
 	}
 }
 
-func startInformers(k8s *k8sClient) {
-	factory := informers.NewSharedInformerFactory(k8s.clientset, 0)
-	namespaceInformer := factory.Core().V1().Namespaces().Informer()
-	secretInformer := factory.Core().V1().Secrets().Informer()
-	serviceAccountInformer := factory.Core().V1().ServiceAccounts().Informer()
-	stopper := make(chan struct{})
-	defer close(stopper)
-
-	secretInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			secret := obj.(*v1.Secret)
-			if secret.Name == configSecretName && secret.Namespace == configSecretNamespace {
-				log.Debugf("Original secret [%s] in namespace [%s]", secret.Name, secret.Namespace)
-			}
-		},
-		DeleteFunc: func(obj interface{}) {
-			secret := obj.(*v1.Secret)
-			if secret.Name == configSecretName && secret.Namespace != configSecretNamespace {
-				log.Debugf("Deleted secret [%s] in namespace [%s]", secret.Name, secret.Namespace)
-
-				namespace := secret.Namespace
-				namespaceObj, err := k8s.clientset.CoreV1().Namespaces().Get(context.Background(), namespace, metav1.GetOptions{})
-				if err != nil {
-					log.Panic(err)
-				}
-
-				// if namespace is excluded do nothing and only log
-				if namespaceIsExcluded(*namespaceObj) {
-					log.Infof("[%s] Namespace skipped", namespaceObj.Name)
-					return
-				}
-
-				// if namespace is terminate do nothing and log only
-				if namespaceObj.Status.Phase == "Terminating" {
-					log.Debugf("[%s] namespace is in phase %s", namespace, namespaceObj.Status.Phase)
-					return
-				}
-
-				log.Debugf("[%s] Start processing secret", namespace)
-				// for each namespace, make sure the dockerconfig secret exists
-				err = processSecret(k8s, namespace)
-
-				if err != nil {
-					// if has error in processing secret, should skip processing service account
-					log.Error(err)
-					return
-				}
-
-				log.Debugf("[%s] Start processing service accounts", namespace)
-
-				// provision deleted secret to all managed service accounts
-				if configAllServiceAccount || len(configServiceAccounts) > 0 {
-					provisionManagedServiceAccounts(k8s, namespace)
-					return
-				}
-
-				// provision default service account
-				sa, err := k8s.clientset.CoreV1().ServiceAccounts(namespace).Get(context.Background(), defaultServiceAccountName, metav1.GetOptions{})
-				if err != nil {
-					log.Error(err)
-				}
-				err = processServiceAccount(k8s, namespace, sa)
-				if err != nil {
-					log.Error(err)
-				}
-			}
-		},
-		UpdateFunc: func(oldObj, newObj interface{}) {
-			secret := oldObj.(*v1.Secret)
-			if secret.Name == configSecretName && secret.Namespace == configSecretNamespace {
-				log.Debugf("Updated secret [%s] in namespace [%s]", secret.Name, secret.Namespace)
-				log.Debug("Running update loop")
-				loop(k8s)
-			}
-		},
-	})
-
-	namespaceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			var err error
-			ns := obj.(*v1.Namespace)
-			namespace := ns.Name
-			log.Debugf("[%s] Namespace discovered", namespace)
-			if namespaceIsExcluded(*ns) {
-				log.Infof("[%s] Namespace skipped", namespace)
-				return
-			}
-
-			log.Debugf("[%s] Start processing secret", namespace)
-			// for each namespace, make sure the dockerconfig secret exists
-			err = processSecret(k8s, namespace)
-			if err != nil {
-				// if has error in processing secret, should skip processing service account
-				log.Error(err)
-			}
-		},
-		DeleteFunc: func(obj interface{}) {
-			ns := obj.(*v1.Namespace)
-			namespace := ns.Name
-			log.Debugf("[%s] Namespace deleted", namespace)
-		},
-	})
-	serviceAccountInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			// var err error
-			sa := obj.(*v1.ServiceAccount)
-			serviceAccount := sa.Name
-			namespace := sa.Namespace
-			// check if namespace of service account exists
-			namespaceObj, err := k8s.clientset.CoreV1().Namespaces().Get(context.Background(), namespace, metav1.GetOptions{})
-			if err != nil {
-				log.Panic(err)
-			}
-			log.Infof("[%s] ServiceAccount [%s] discovered", sa.Namespace, serviceAccount)
-			if namespaceIsExcluded(*namespaceObj) {
-				log.Infof("[%s] Namespace excluded", namespace)
-				return
-			}
-
-			log.Debugf("[%s] Start processing service account [%s]", namespace, serviceAccount)
-			// get default service account, and patch image pull secret if not exist
-			err = processServiceAccount(k8s, namespace, sa)
-			if err != nil {
-				log.Error(err)
-			}
-		},
-	})
-	log.Info("Namespace informer started")
-	go namespaceInformer.Run(stopper)
-	log.Info("ServiceAccount informer started")
-	go serviceAccountInformer.Run(stopper)
-	log.Info("Secret informer started")
-	secretInformer.Run(stopper)
-}
-
 func loop(k8s *k8sClient) {
 	var err error
 
@@ -326,37 +189,46 @@ func namespaceIsExcluded(ns v1.Namespace) bool {
 
 func processSecret(k8s *k8sClient, namespace string) error {
 	secret, err := k8s.clientset.CoreV1().Secrets(namespace).Get(context.Background(), configSecretName, metav1.GetOptions{})
+
+	// secret is not found so let's provision one
 	if errors.IsNotFound(err) {
 		_, err := k8s.clientset.CoreV1().Secrets(namespace).Create(context.Background(), dockerconfigSecret(namespace), metav1.CreateOptions{})
 		if err != nil {
 			return fmt.Errorf("[%s] Failed to create secret: %v", namespace, err)
 		}
 		log.Infof("[%s] Created secret", namespace)
-	} else if err != nil {
+		return nil
+	}
+
+	// unknown error during get for secret
+	if err != nil {
 		return fmt.Errorf("[%s] Failed to GET secret: %v", namespace, err)
-	} else {
-		if configManagedOnly && isManagedSecret(secret) {
-			return fmt.Errorf("[%s] Secret is present but unmanaged", namespace)
-		}
-		switch verifySecret(secret) {
-		case secretOk:
-			log.Debugf("[%s] Secret is valid", namespace)
-		case secretWrongType, secretNoKey, secretDataNotMatch:
-			if configForce {
-				log.Warnf("[%s] Secret is not valid, overwritting now", namespace)
-				err = k8s.clientset.CoreV1().Secrets(namespace).Delete(context.Background(), configSecretName, metav1.DeleteOptions{})
-				if err != nil {
-					return fmt.Errorf("[%s] Failed to delete secret [%s]: %v", namespace, configSecretName, err)
-				}
-				log.Warnf("[%s] Deleted secret [%s]", namespace, configSecretName)
-				_, err = k8s.clientset.CoreV1().Secrets(namespace).Create(context.Background(), dockerconfigSecret(namespace), metav1.CreateOptions{})
-				if err != nil {
-					return fmt.Errorf("[%s] Failed to create secret: %v", namespace, err)
-				}
-				log.Infof("[%s] Created secret", namespace)
-			} else {
-				return fmt.Errorf("[%s] Secret is not valid, set --force to true to overwrite", namespace)
+	}
+
+	// secret with name equal to configSecretName is found
+	if configManagedOnly && isManagedSecret(secret) {
+		return fmt.Errorf("[%s] Secret is present but unmanaged", namespace)
+	}
+
+	// verify status of matching secret
+	switch verifySecret(secret) {
+	case secretOk:
+		log.Debugf("[%s] Secret is valid", namespace)
+	case secretWrongType, secretNoKey, secretDataNotMatch:
+		if configForce {
+			log.Warnf("[%s] Secret is not valid, overwritting now", namespace)
+			err = k8s.clientset.CoreV1().Secrets(namespace).Delete(context.Background(), configSecretName, metav1.DeleteOptions{})
+			if err != nil {
+				return fmt.Errorf("[%s] Failed to delete secret [%s]: %v", namespace, configSecretName, err)
 			}
+			log.Warnf("[%s] Deleted secret [%s]", namespace, configSecretName)
+			_, err = k8s.clientset.CoreV1().Secrets(namespace).Create(context.Background(), dockerconfigSecret(namespace), metav1.CreateOptions{})
+			if err != nil {
+				return fmt.Errorf("[%s] Failed to create secret: %v", namespace, err)
+			}
+			log.Infof("[%s] Created secret", namespace)
+		} else {
+			return fmt.Errorf("[%s] Secret is not valid, set --force to true to overwrite", namespace)
 		}
 	}
 	return nil
