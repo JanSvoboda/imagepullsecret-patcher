@@ -36,9 +36,9 @@ var testCasesLookupEnvOrString = []struct {
 func TestLookupEnvOrString(t *testing.T) {
 	for _, testCase := range testCasesLookupEnvOrString {
 		prepareEnvs(testCase.envs)
-		actual := LookupEnvOrString(testCase.lookupKey, testCase.defaultVal)
+		actual := LookupEnvOrType(testCase.lookupKey, testCase.defaultVal)
 		if actual != testCase.expected {
-			t.Errorf("LookupEnvOrString(%s) gives %s, expects %s", testCase.name, actual, testCase.expected)
+			t.Errorf("LookupEnvOrType(%s) gives %s, expects %s", testCase.name, actual, testCase.expected)
 		}
 	}
 }
@@ -82,9 +82,9 @@ var testCasesLookupEnvOrInt = []struct {
 func TestLookupEnvOrInt(t *testing.T) {
 	for _, testCase := range testCasesLookupEnvOrInt {
 		prepareEnvs(testCase.envs)
-		actual := LookupEnvOrInt(testCase.lookupKey, testCase.defaultVal)
+		actual := LookupEnvOrType(testCase.lookupKey, testCase.defaultVal)
 		if actual != testCase.expected {
-			t.Errorf("LookupEnvOrInt(%s) gives %d, expects %d", testCase.name, actual, testCase.expected)
+			t.Errorf("LookupEnvOrType(%s) gives %d, expects %d", testCase.name, actual, testCase.expected)
 		}
 	}
 }
@@ -128,9 +128,9 @@ var testCasesLookupEnvOrBool = []struct {
 func TestLookupEnvOrBool(t *testing.T) {
 	for _, testCase := range testCasesLookupEnvOrBool {
 		prepareEnvs(testCase.envs)
-		actual := LookUpEnvOrBool(testCase.lookupKey, testCase.defaultVal)
+		actual := LookupEnvOrType(testCase.lookupKey, testCase.defaultVal)
 		if actual != testCase.expected {
-			t.Errorf("LookupEnvOrBool(%s) gives %v, expects %v", testCase.name, actual, testCase.expected)
+			t.Errorf("LookupEnvOrType(%s) gives %v, expects %v", testCase.name, actual, testCase.expected)
 		}
 	}
 }
@@ -174,9 +174,9 @@ var testCasesLookupEnvOrDuration = []struct {
 func TestLookupEnvOrDuration(t *testing.T) {
 	for _, testCase := range testCasesLookupEnvOrDuration {
 		prepareEnvs(testCase.envs)
-		actual := LookupEnvOrDuration(testCase.lookupKey, testCase.defaultVal)
+		actual := LookupEnvOrType(testCase.lookupKey, testCase.defaultVal)
 		if actual != testCase.expected {
-			t.Errorf("LookupEnvOrDuration(%s) gives %v, expects %v", testCase.name, actual, testCase.expected)
+			t.Errorf("LookupEnvOrType(%s) gives %v, expects %v", testCase.name, actual, testCase.expected)
 		}
 	}
 }
