@@ -1,10 +1,8 @@
 name: Docker Image CI
 
 on:
-  push:
-    branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
+  tags:
+    - 'v*.*'
     
 jobs:
   docker:
@@ -29,9 +27,6 @@ jobs:
           push: true
           tags: svoboh/imagepullsecret-patcher:latest
           file: Dockerfile.buildx
-      - name: Echo github tag
-        run: |
-          echo "Tag name from github.ref_name: ${{ github.ref_name }}"
       - name: Build and push tag
         uses: docker/build-push-action@v5
         with:
